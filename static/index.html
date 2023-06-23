@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <script src="../lib/VSS.SDK.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <script type="text/javascript" defer>
+        VSS.init({
+            explicitNotifyLoaded: true,
+            usePlatformScripts: true,
+            usePlatformStyles: true
+        });
+        VSS.require(["TFS/Core/RestClient", "VSS/Controls"],
+            function (restClient, Controls) {
+                Controls.Enhancement.ensureEnhancements();
+                var client = restClient.getClient();
+                var dataService;
+                var collectionName;
+                var projects;
+                var workItemDataCount;
+                var users;
+                var usersArray;
+                var accessLevels;
+                var usersDistinctAccessLevels =[];
+                var distinctAccessLevels;
+                var originTypes=[];
+                var filteredUsers;
+                var acc=[];
+                var access;
+
+                async function initDataService() {
+                    dataService = await VSS.getService(VSS.ServiceIds.ExtensionData);
+                }
+                //GET ACCESS LEVEL
+                async function getAccessLevel(organization, token) {
+                        const AccessUrl = `https://vsaex.dev.azure.com/${organization}/_apis/userentitlements?top=100000&api-version=4.1-preview.1`;
+                        const ALResponse = await fetch(AccessUrl, {
+                            headers: {
+                                Authorization: "Basic " + btoa("" + ":" + `${token}`)
+                            },
+                        }, { mode: 'no-cors' });
+                        var ALData = await ALResponse.json();
+                        accessLevels = ALData.value;
+                    }  
+                    
+                //FILTER FOR BOTH
+                function filterUsers(users,acc) {
+                    filteredUsers = acc;
+                    var filteredUserCount = document.getElementById('filteredCount');
+                    var userDataContainer = document.querySelector('#userDataContainer tbody');
+                    var userFilterInput = document.getElementById('userFilterInput');
+                    var selectedOrigin = originDropdown.value; // Get the selected origin type
+                    var selectedAccessLevel = accessLevelDropdown.value; // Get the selected access level
+                    var filterValue = userFilterInput.value.toLowerCase();
+
+                    if (filterValue !== null) {
+                    var fil = filterValue.toLowerCase();
+
+                    filteredUsers = filteredUsers.filter((innerArray) => {
+                        return innerArray.some((obj) => {
+                        return obj.user && obj.user.displayName && obj.user.displayName.toLowerCase().includes(fil);
+                        });
+                    });
+                    }
+                    // Filter the users based on the selected origin
+                    if (selectedOrigin !== 'Select Origin') {
+                        filteredUsers = filteredUsers.filter((innerArray) => {
+                            return innerArray.some((obj) => {
+                            return obj.user && obj.user.origin === selectedOrigin;
+                            });
+                        });
+                        }
+
+
+                    // // Filter the users based on the selected access level
+                    if (selectedAccessLevel !== 'Select Access Level') {
+                        filteredUsers = filteredUsers.filter(a => {
+                            if (a.length > 0 && a[0].accessLevel && a[0].accessLevel.licenseDisplayName === selectedAccessLevel) {
+                            return true;
+                            }
+                            return false;
+                        });
+                        }
+                    filteredUserCount.innerText = filteredUsers.length;
+                    document.getElementById('filter').style.display = 'flex';
+                    filteredUserCount.style.display = 'flex';
+
+                    // Clear existing user data
+                    userDataContainer.innerHTML = '';
+
+                    // Add the filtered users to the user table
+                    filteredUsers.forEach((innerArray) => {
+                    innerArray.forEach((z) => {
+                        var userRow = document.createElement('tr');
+
+                        var mailCell = document.createElement('td');
+                        mailCell.style.display = 'flex'; // Set display to flex
+                        userRow.appendChild(mailCell);
+
+                        if (z.user && z.user._links && z.user._links.avatar && z.user._links.avatar.href) {
+                        var avatarImg = document.createElement('img');
+                        avatarImg.src = z.user._links.avatar.href;
+                        avatarImg.style.width = '30px'; // Adjust the width as needed
+                        avatarImg.style.height = '30px';
+                        avatarImg.style.marginTop = '2px';
+                        avatarImg.style.borderRadius = '50%';
+                        mailCell.appendChild(avatarImg);
+                        }
+
+                        if (z.user && z.user.displayName) {
+                        var nameEmailContainer = document.createElement('div');
+                        nameEmailContainer.style.display = 'flex';
+                        nameEmailContainer.style.flexDirection = 'column';
+                        nameEmailContainer.style.marginLeft = '10px'; // Add spacing between image and text
+
+                        var nameElement = document.createElement('span');
+                        nameElement.textContent = z.user.displayName;
+                        nameElement.style.fontSize = '.875rem';
+                        nameEmailContainer.appendChild(nameElement);
+
+                        var emailElement = document.createElement('span');
+                        emailElement.textContent = z.user.mailAddress;
+                        emailElement.style.color = 'var(--text-secondary-color,rgba(0, 0, 0, .55))';
+                        nameEmailContainer.appendChild(emailElement);
+
+                        mailCell.appendChild(nameEmailContainer);
+                        }
+
+                        var userOriginCell = document.createElement('td');
+                        userOriginCell.textContent = z.user.origin || '';
+                        userRow.appendChild(userOriginCell);
+
+                        var filteredUserAccessLevelCell = document.createElement('td');
+                        filteredUserAccessLevelCell.textContent = z.accessLevel.licenseDisplayName || '';
+                        userRow.appendChild(filteredUserAccessLevelCell);
+
+                        // Add the user row to the user table
+                        userDataContainer.appendChild(userRow);
+                    });
+                    });
+                    }
+
+                VSS.ready(async function () {
+                    await initDataService();
+                    var projects = await client.getProjects();
+                    var context = await VSS.getWebContext();
+                    var loggedinUser = context.user.email;
+                    var accesdetails = await VSS.getAccessToken();
+                    var token = accesdetails.token;
+
+                    var projectName = projects[0].name;
+                    var organization = context.collection.name;
+                    getAccessLevel(organization, token); 
+                    //LIST OF USERS
+                    async function getUsersInProject(organization, scopeDescriptor) {
+                        usersArray = [];
+                        let continuationToken = '';
+                        try {
+                           do {
+                            const url = `https://vssps.dev.azure.com/${organization}/_apis/graph/users?continuationToken=${continuationToken}&scopeDescriptor=${scopeDescriptor}&api-version=7.0-preview.1`;
+
+                            const response = await fetch(url, {
+                                headers: {
+                                    Authorization: "Basic " + btoa("" + ":" + `${token}`)
+                                }
+                            });
+                            const data = await response.json();
+                            usersArray.push(...data.value);
+                            //extra bit for continuation token
+                            continuationToken = response.headers.get('X-MS-ContinuationToken');
+                        } while (continuationToken);
+
+                        } catch (error) {
+                            console.log(error);
+                        }
+
+                        return usersArray;
+                    }
+
+                    //DESCRIPTOR FOR GROUPS
+                    async function getDescriptors(organization, token, projectId) {
+                        const DUrl = ` https://vssps.dev.azure.com/${organization}/_apis/graph/descriptors/${projectId}?api-version=7.1-preview.1`;
+                        const DesResponse = await fetch(DUrl, {
+                            headers: {
+                                Authorization: "Basic " + btoa("" + ":" + `${token}`)
+                            },
+                        }, { mode: 'no-cors' });
+                        const desData = await DesResponse.json();
+                        var scopeDescriptor = desData.value;
+                        const subjectTypes = 'aad';
+                        getUsersInProject(organization,scopeDescriptor)
+                            .then(usersArray => {
+                                users = usersArray.filter((a,b,c)=>c.indexOf(a)===b);
+                                // Clear existing user data
+                                acc = [];
+                                usersDistinctAccessLevels=[];
+                                var userDataContainer = document.querySelector('#userDataContainer tbody');
+                                userDataContainer.innerHTML = '';
+                                users.sort((a, b) => a.displayName.localeCompare(b.displayName));
+                                users.forEach(y => {
+                                    
+                                    //ACCESS LEVELS FOR USERS
+                                    const matchedAccessLevel = accessLevels && accessLevels.filter(accessLevel => accessLevel.user.mailAddress == y.mailAddress);
+                                    acc.push(matchedAccessLevel);
+                                    matchedAccessLevel && matchedAccessLevel.forEach(matchedAccess => {
+                                        let level = matchedAccess.accessLevel.licenseDisplayName;
+                                        usersDistinctAccessLevels.push(level);
+                                        //DISPLAY THOSE ONLY USERS THAT WE GET FROM PROJECT LEVEL ENTITLEMENTS 
+                                        var userRow = document.createElement('tr');
+
+                                        var mailCell = document.createElement('td');
+                                        mailCell.style.display = 'flex'; // Set display to flex
+                                        userRow.appendChild(mailCell);
+
+                                        var avatarImg = document.createElement('img');
+                                        avatarImg.src = matchedAccess.user._links.avatar.href;
+                                        avatarImg.style.width = '30px';// Adjust the width as needed
+                                        avatarImg.style.borderRadius = '50%';
+                                        avatarImg.style.height = '30px';
+                                        avatarImg.style.marginTop = '2px';
+                                        mailCell.appendChild(avatarImg);
+
+                                        var nameEmailContainer = document.createElement('div');
+                                        nameEmailContainer.style.display = 'flex';
+                                        nameEmailContainer.style.flexDirection = 'column';
+                                        nameEmailContainer.style.marginLeft = '15px'; // Add spacing between image and text
+
+                                        var nameElement = document.createElement('span');
+                                        nameElement.textContent = matchedAccess.user.displayName;
+                                        nameElement.style.fontSize = '.875rem';
+                                        nameEmailContainer.appendChild(nameElement);
+
+                                        var emailElement = document.createElement('span');
+                                        emailElement.textContent = matchedAccess.user.mailAddress;
+                                        emailElement.style.color = ' var(--text-secondary-color,rgba(0, 0, 0, .55))';
+                                        nameEmailContainer.appendChild(emailElement);
+
+                                        mailCell.appendChild(nameEmailContainer);
+
+                                        userRow.appendChild(mailCell);
+
+                                        userDataContainer.appendChild(userRow);
+
+                                        var originCell = document.createElement('td');
+                                        originCell.textContent = matchedAccess.user.origin;
+                                        userRow.appendChild(originCell);
+                                        //DISPLAY THOSE ONLY USERS THAT WE GET FROM PROJECT LEVEL ENTITLEMENTS 
+                                        var userAccessLevelCell = document.createElement('td');
+                                        userAccessLevelCell.textContent = level;
+                                        userRow.appendChild(userAccessLevelCell);
+                                    });
+                                    var originDropdown = document.getElementById('originDropdown');
+                                    var accessLevelDropdown = document.getElementById('accessLevelDropdown');
+                                    //unique origin types
+                                    // Get the unique origin types
+                                    originTypes = [...new Set(users.map((user) => user.origin))];
+
+                                    originTypes.forEach((originType) => {
+                                    if (!originDropdown.querySelector(`option[value="${originType}"]`)) {
+                                        var option = document.createElement('option');
+                                        option.value = originType;
+                                        option.textContent = originType;
+                                        originDropdown.appendChild(option);
+                                    }
+                                    });
+                                    //unique access levels
+                                    // Get the unique access levels for dropDown
+                                    access = [...new Set(usersDistinctAccessLevels)];
+
+                                    access.forEach((accessLevel) => {
+                                    if (!accessLevelDropdown.querySelector(`option[value="${accessLevel}"]`)) {
+                                        var option = document.createElement('option');
+                                        option.value = accessLevel;
+                                        option.textContent = accessLevel;
+                                        accessLevelDropdown.appendChild(option);
+                                    }
+                                    });
+                                });
+                                document.getElementById('usersCount').innerText = usersDistinctAccessLevels.length;
+                                  //DATA FOR SUMMARY
+                                    //COUNT OF USERS ASSOCIATED WITH DISTINCT ACCESS LEVELS
+                                    // Count the number of users associated with distinct access levels
+                                    const countMap = new Map();
+                                    const processArray = (arr) => {
+                                    arr.forEach((element) => {
+                                        if (Array.isArray(element)) {
+                                        processArray(element);
+                                        } else {
+                                        const { licenseDisplayName } = element.accessLevel;
+                                        if (countMap.has(licenseDisplayName)) {
+                                            countMap.set(licenseDisplayName, countMap.get(licenseDisplayName) + 1);
+                                        } else {
+                                            countMap.set(licenseDisplayName, 1);
+                                        }
+                                        }
+                                    });
+                                    };
+
+                                    processArray(acc);
+                                   //popUpDistinctAccessLevelCount
+                                   const targetElement = document.getElementById('popUpDistinctAccessLevelCount');
+                                    targetElement.innerHTML = '';
+                                    countMap.forEach((count, licenseDisplayName) => {
+                                    const h3 = document.createElement('h3');
+                                    h3.textContent = `${licenseDisplayName}: ${count}`;
+                                    targetElement.appendChild(h3);
+                                    });
+                                 //DATA FOR SUMMARY
+                            });
+                        return desData;
+                    }
+
+                    var dropdown = document.getElementById('projectDropdown');
+                    // Sort the projects by name before iterating over them
+                    projects.sort((a, b) => a.name.localeCompare(b.name));
+                    // Iterate over the projects array and create an option element for each project
+                    projects.forEach((project) => {
+                        var option = document.createElement('option');
+                        option.value = project.id; // Set the value of the option to the project ID
+                        option.textContent = project.name; // Set the text content of the option to the project name
+                        dropdown.appendChild(option); // Add the option to the dropdown
+                    });
+                    
+                    dropdown.addEventListener('change', (event) => {
+                        accessLevelDropdown.selectedIndex = 0;
+                        originDropdown.selectedIndex = 0;
+                        document.getElementById('userFilterInput').value = '';
+                        document.getElementById('total').style.display = 'flex';
+                        document.getElementById('filter').style.display = 'none';
+                        document.getElementById('userDataContainer').style.display = 'block';
+                        var containerElement = document.getElementById('userDataContainer');
+                        var selectedProjectId = event.target.value; // Get the selected project ID
+                        // Find the selected project in the 'projects' array
+                        selectedProject = projects.find((project) => project.id === selectedProjectId);
+
+                        // Perform the desired operations using the selected project
+                        var pro = selectedProject.id;
+                        var proName = selectedProject.name;
+                        var startTime = performance.now();
+                        getDescriptors(organization, token, pro);
+                        var loadingElement = document.createElement('div');
+                        loadingElement.classList.add('loading');
+                        loadingElement.innerText = 'Loading...';
+                        containerElement.appendChild(loadingElement);
+
+                        var endTime = performance.now();
+                        var executionTime = endTime - startTime;
+
+                        setTimeout(showContainer, executionTime);
+                        function showContainer() {
+                        containerElement.removeChild(loadingElement);
+                        }
+                        //DROPDOWNS
+                        originDropdown.addEventListener('change', function() {
+                        filterUsers(users, acc);
+                        });
+                        accessLevelDropdown.addEventListener('change', function() {
+                        filterUsers(users, acc);
+                        });
+                        userFilterInput.addEventListener('input',function(){
+                            filterUsers(users, acc);
+                        });
+                    });
+                    //download event listener
+//download event listener
+var downloadLink = document.getElementById('downloadLink');
+downloadLink.addEventListener('click', () => {
+  // Generate the CSV content
+  var csvContent = '';
+
+  // Get the table data
+  var table = document.getElementById('userDataContainer');
+  var rows = table.querySelectorAll('tr');
+
+  // Iterate over table rows and extract name, email, origin, and access level
+  rows.forEach((row) => {
+    var name = '';
+    var email = '';
+    var origin = '';
+    var accessLevel = '';
+
+    // Get the name and email from the first cell
+    var nameElement = row.querySelector('td:nth-child(1) div span:first-child');
+    if (nameElement) {
+      name = nameElement.textContent.trim();
+    }
+
+    var emailElement = row.querySelector('td:nth-child(1) div span:last-child');
+    if (emailElement) {
+      email = emailElement.textContent.trim();
+    }
+
+    // Get the origin from the second cell
+    var originCell = row.querySelector('td:nth-child(2)');
+    if (originCell) {
+      origin = originCell.textContent.trim();
+    }
+
+    // Get the access level from the third cell
+    var accessLevelCell = row.querySelector('td:nth-child(3)');
+    if (accessLevelCell) {
+      accessLevel = accessLevelCell.textContent.trim();
+    }
+
+    // Construct the row data with name, email, origin, and access level
+    var rowData = ['"' + name.replace(/"/g, '""') + '"', '"' + email.replace(/"/g, '""') + '"', '"' + origin.replace(/"/g, '""') + '"', '"' + accessLevel.replace(/"/g, '""') + '"'];
+    csvContent += rowData.join(',') + "\n";
+  });
+
+  // Create a Blob object from the CSV content
+  var blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+
+  // Update the download link with the CSV file data
+  downloadLink.href = URL.createObjectURL(blob);
+});
+
+                    //RESET/CLEAR BUTTONS
+                    // Get a reference to the reset button
+                    var resetButton = document.getElementById('resetButton');
+
+                    // Add a click event listener to the reset button
+                    resetButton.addEventListener('click', function() {
+                    // Reset each dropdown to its default value
+                    originDropdown.selectedIndex = 0; // Reset the originDropdown to the default value
+                    accessLevelDropdown.selectedIndex = 0; // Reset the accessLevelDropdown to the default value
+                    projectDropdown.selectedIndex = 0;
+                    document.getElementById('userFilterInput').value = '';
+                    document.getElementById('filter').style.display = 'none';
+                    document.getElementById('total').style.display = 'none';
+                    document.getElementById('userDataContainer').style.display = 'none';
+                    });
+                 
+                    const summaryButton = document.getElementById('summaryButton');
+                    const popupContainer = document.getElementById('popupContainer');
+                    const closeButton = document.getElementById('closeButton');
+                    const overlayEffect = document.createElement('div'); // Create overlay element dynamically
+                    overlayEffect.classList.add('overlay-effect');
+                    const bodyElement = document.body;
+                    const totalUsersCount = document.getElementById('totalUsersCount');
+
+                    summaryButton.addEventListener('click', function() {
+                    popupContainer.classList.add('show');
+                    bodyElement.appendChild(overlayEffect); // Append overlay element to body
+                    overlayEffect.classList.add('show');
+                    totalUsersCount.innerText = usersDistinctAccessLevels.length;
+                    });
+
+                    closeButton.addEventListener('click', function() {
+                    popupContainer.classList.remove('show');
+                    overlayEffect.classList.remove('show');
+
+                    // Delay removing the overlay to allow the fade-out transition
+                    setTimeout(function() {
+                        bodyElement.removeChild(overlayEffect); // Remove overlay element from body
+                    }, 300); // Adjust the delay time to match the transition duration in CSS
+                    });
+
+                });
+                VSS.notifyLoadSucceeded();
+            });
+    </script>
+</head>
+
+<body>
+    <div class="heading">
+        <h1>Users</h1>
+        <h3>All Users</h3>
+        <hr>
+      </div>
+    <div class="header">
+        <input type="text" id="userFilterInput" placeholder="Filter by users" />
+        <select id="projectDropdown">
+            <option disabled selected>Select Project</option>
+        </select>
+        <select id="originDropdown">
+            <option disabled selected>Select Origin</option>
+        </select>
+        <select id="accessLevelDropdown">
+            <option disabled selected>Select Access Level</option>
+        </select>
+        <i id="resetButton" class="material-icons">clear</i>
+    </div>
+
+      <table id="userDataContainer">
+        <thead>
+            <tr>
+                <th>
+                    <div id="thisContainer">
+                        <div id="TotalFilteredCount" style="flex:1">
+                          <p id="total" style="display:none">Total: <span id="usersCount"></span></p>
+                          <p id="filter" style="display:none">Filtered: <span id="filteredCount"></span></p>
+                        </div>
+                        <div>
+                          <div class="clickButtons">
+                              <button><a id="downloadLink" href="#" download="users.csv">Export</a></button>
+                              <button id="summaryButton">Summary</button>
+                          </div>
+                          <div id="popupContainer">
+                          <div id="popupContent">
+                              <i id="closeButton" class="material-icons">clear</i>
+                              <h1>Summary</h1>
+                              <h2>Total Users:<span id="totalUsersCount"></span></h2>
+                              <p id="popUpDistinctAccessLevelCount"></p>
+                          </div>
+                          </div>
+                        </div>
+                    </div>
+                </th>
+              </tr>
+          <tr>
+            <th>Name</th>
+            <th>Origin</th>
+            <th>Access Level</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+    </table>      
+</body>
+</html>
